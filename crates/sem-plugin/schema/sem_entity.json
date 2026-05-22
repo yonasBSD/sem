@@ -24,6 +24,10 @@
       "type": "integer",
       "description": "Start line of the entity (1-indexed)"
     },
+    "end_line": {
+      "type": "integer",
+      "description": "End line of the entity (1-indexed, inclusive)"
+    },
     "content": {
       "type": ["string", "null"],
       "description": "Source content of the entity"
