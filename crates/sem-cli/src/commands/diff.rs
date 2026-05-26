@@ -26,6 +26,7 @@ pub struct DiffOptions {
     pub profile: bool,
     pub file_exts: Vec<String>,
     pub no_cosmetics: bool,
+    pub label: Option<String>,
     pub args: Vec<String>,
 }
 
@@ -48,7 +49,11 @@ struct ParsedArgs {
 
 enum ParsedScope {
     /// Two files to compare directly
-    FileCompare(String, String),
+    FileCompare {
+        before: String,
+        after: String,
+        label: Option<String>,
+    },
     /// A single ref compared to working tree
     RefToWorking(String),
     /// A range between two refs
@@ -203,11 +208,18 @@ fn parse_args(args: Vec<String>, cwd: &str) -> ParsedArgs {
         let b = &refs[1];
 
         // If both exist as files on disk and no pathspecs, treat as file comparison
-        if pathspecs.is_empty() && Path::new(cwd).join(a).exists() && Path::new(cwd).join(b).exists() {
+        if pathspecs.is_empty()
+            && Path::new(cwd).join(a).exists()
+            && Path::new(cwd).join(b).exists()
+        {
             // But check if they're also valid git refs — prefer ref interpretation
             // Only fall back to file comparison if neither resolves as a ref
             return ParsedArgs {
-                scope: Some(ParsedScope::FileCompare(a.clone(), b.clone())),
+                scope: Some(ParsedScope::FileCompare {
+                    before: a.clone(),
+                    after: b.clone(),
+                    label: None,
+                }),
                 pathspecs,
             };
         }
@@ -223,7 +235,11 @@ fn parse_args(args: Vec<String>, cwd: &str) -> ParsedArgs {
     // When sem is set as diff.external, git passes 7 positional args per file.
     if refs.len() == 7 {
         return ParsedArgs {
-            scope: Some(ParsedScope::FileCompare(refs[1].clone(), refs[4].clone())),
+            scope: Some(ParsedScope::FileCompare {
+                before: refs[1].clone(),
+                after: refs[4].clone(),
+                label: Some(refs[0].clone()),
+            }),
             pathspecs,
         };
     }
@@ -363,7 +379,7 @@ pub fn diff_command(mut opts: DiffOptions) {
                     *a = maybe_resolve_ref(a, root);
                     *b = maybe_resolve_ref(b, root);
                 }
-                ParsedScope::FileCompare(_, _) => {}
+                ParsedScope::FileCompare { .. } => {}
             }
         }
         if let Some(ref mut sha) = opts.commit {
@@ -391,17 +407,22 @@ pub fn diff_command(mut opts: DiffOptions) {
             process::exit(1);
         });
         (changes, true)
-    } else if let Some(ParsedScope::FileCompare(ref a, ref b)) = parsed.scope {
+    } else if let Some(ParsedScope::FileCompare {
+        ref before,
+        ref after,
+        ref label,
+    }) = parsed.scope
+    {
         // Compare two arbitrary files: sem diff file1.ts file2.ts
-        let path_a = Path::new(&opts.cwd).join(a);
-        let path_b = Path::new(&opts.cwd).join(b);
+        let path_a = Path::new(&opts.cwd).join(before);
+        let path_b = Path::new(&opts.cwd).join(after);
 
         // If we're in a git repo and both resolve as refs, prefer ref comparison
         if let Ok(git) = GitBridge::open(Path::new(&opts.cwd)) {
-            if git.is_valid_rev(a) && git.is_valid_rev(b) {
+            if git.is_valid_rev(before) && git.is_valid_rev(after) {
                 let scope = DiffScope::Range {
-                    from: a.clone(),
-                    to: b.clone(),
+                    from: before.clone(),
+                    to: after.clone(),
                 };
                 match git.get_changed_files(&scope, &parsed.pathspecs) {
                     Ok(files) => {
@@ -425,7 +446,11 @@ pub fn diff_command(mut opts: DiffOptions) {
         });
 
         let change = FileChange {
-            file_path: b.clone(),
+            file_path: opts
+                .label
+                .clone()
+                .or_else(|| label.clone())
+                .unwrap_or_else(|| after.clone()),
             old_file_path: None,
             status: sem_core::git::types::FileStatus::Modified,
             before_content: Some(content_a),
@@ -520,7 +545,7 @@ pub fn diff_command(mut opts: DiffOptions) {
                         }
                     }
                 }
-                ParsedScope::FileCompare(_, _) => unreachable!(),
+                ParsedScope::FileCompare { .. } => unreachable!(),
             };
             match git.get_changed_files(&scope, &parsed.pathspecs) {
                 Ok(files) => (scope, files),

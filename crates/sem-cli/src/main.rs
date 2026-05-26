@@ -34,6 +34,10 @@ enum ColorMode {
 enum Commands {
     /// Show semantic diff of changes (supports git diff syntax). Untracked files are excluded, matching git behavior.
     Diff {
+        /// Display path label for direct file comparison
+        #[arg(long, hide = true)]
+        label: Option<String>,
+
         /// Git refs, files, or pathspecs (supports ref1..ref2, ref1...ref2, -- paths)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -314,6 +318,7 @@ fn main() {
 
     match cli.command {
         Some(Commands::Diff {
+            label,
             args,
             staged,
             cached,
@@ -355,6 +360,7 @@ fn main() {
                 profile,
                 file_exts,
                 no_cosmetics,
+                label,
                 args,
             });
         }
@@ -543,6 +549,7 @@ fn main() {
                 profile: false,
                 file_exts: vec![],
                 no_cosmetics: false,
+                label: None,
                 args: vec![],
             });
         }
