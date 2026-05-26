@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod server;
 pub mod tools;
+mod transport;
 
 use rmcp::ServiceExt;
 
@@ -18,7 +19,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .init();
 
         let server = server::SemServer::new();
-        let transport = (tokio::io::stdin(), tokio::io::stdout());
+        let transport =
+            transport::ResilientStdioTransport::new(tokio::io::stdin(), tokio::io::stdout());
         let service = server.serve(transport).await?;
         service.waiting().await?;
         Ok(())
