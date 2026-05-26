@@ -204,6 +204,29 @@ int main() {
     }
 
     #[test]
+    fn test_c_function_locals_not_extracted() {
+        let code = r#"
+int global_count = 0;
+int helper(void);
+
+int main(void) {
+    int local = helper();
+    const char *message = "hello";
+    return local + global_count;
+}
+"#;
+        let plugin = CodeParserPlugin;
+        let entities = plugin.extract_entities(code, "main.c");
+        let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
+
+        assert!(names.contains(&"global_count"), "got: {:?}", names);
+        assert!(names.contains(&"helper"), "got: {:?}", names);
+        assert!(names.contains(&"main"), "got: {:?}", names);
+        assert!(!names.contains(&"local"), "got: {:?}", names);
+        assert!(!names.contains(&"message"), "got: {:?}", names);
+    }
+
+    #[test]
     fn test_cpp_entity_extraction() {
         let code = "namespace math {\nclass Vector3 {\npublic:\n    float length() const { return 0; }\n};\n}\nvoid greet() {}\n";
         let plugin = CodeParserPlugin;
@@ -212,6 +235,33 @@ int main() {
         assert!(names.contains(&"math"), "got: {:?}", names);
         assert!(names.contains(&"Vector3"), "got: {:?}", names);
         assert!(names.contains(&"greet"), "got: {:?}", names);
+    }
+
+    #[test]
+    fn test_cpp_function_locals_not_extracted() {
+        let code = r#"
+int global_value = 1;
+int helper();
+
+int main() {
+    int local = helper();
+    auto lambda = []() {
+        int lambda_local = 3;
+        return lambda_local;
+    };
+    return local + lambda();
+}
+"#;
+        let plugin = CodeParserPlugin;
+        let entities = plugin.extract_entities(code, "main.cpp");
+        let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
+
+        assert!(names.contains(&"global_value"), "got: {:?}", names);
+        assert!(names.contains(&"helper"), "got: {:?}", names);
+        assert!(names.contains(&"main"), "got: {:?}", names);
+        assert!(!names.contains(&"local"), "got: {:?}", names);
+        assert!(!names.contains(&"lambda"), "got: {:?}", names);
+        assert!(!names.contains(&"lambda_local"), "got: {:?}", names);
     }
 
     #[test]

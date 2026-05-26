@@ -377,6 +377,30 @@ const JS_TS_SCOPE_BOUNDARIES: &[&str] = &[
     "generator_function",
 ];
 
+/// Inside C function bodies, suppress `declaration` nodes so that block-local
+/// variables are not extracted as nested entities. Inner type declarations are
+/// still reached by traversal after the wrapper is skipped.
+const C_SUPPRESSED_NESTED: &[SuppressedNestedEntity] = &[SuppressedNestedEntity {
+    parent_entity_node_type: "function_definition",
+    child_entity_node_type: "declaration",
+}];
+
+/// Inside C++ function-like bodies, suppress `declaration` nodes so that
+/// block-local variables are not extracted as nested entities. Inner type
+/// declarations are still reached by traversal after the wrapper is skipped.
+const CPP_SUPPRESSED_NESTED: &[SuppressedNestedEntity] = &[
+    SuppressedNestedEntity {
+        parent_entity_node_type: "function_definition",
+        child_entity_node_type: "declaration",
+    },
+    SuppressedNestedEntity {
+        parent_entity_node_type: "lambda_expression",
+        child_entity_node_type: "declaration",
+    },
+];
+
+const CPP_SCOPE_BOUNDARIES: &[&str] = &["lambda_expression"];
+
 #[cfg(feature = "lang-typescript")]
 static TYPESCRIPT_CONFIG: LanguageConfig = LanguageConfig {
     id: "typescript",
@@ -549,7 +573,7 @@ static C_CONFIG: LanguageConfig = LanguageConfig {
     ],
     container_node_types: &["compound_statement"],
     call_entity_identifiers: &[],
-    suppressed_nested_entities: &[],
+    suppressed_nested_entities: C_SUPPRESSED_NESTED,
     scope_boundary_types: &[],
     get_language: get_c,
     scope_resolve: None,
@@ -571,8 +595,8 @@ static CPP_CONFIG: LanguageConfig = LanguageConfig {
     ],
     container_node_types: &["field_declaration_list", "declaration_list", "compound_statement"],
     call_entity_identifiers: &[],
-    suppressed_nested_entities: &[],
-    scope_boundary_types: &[],
+    suppressed_nested_entities: CPP_SUPPRESSED_NESTED,
+    scope_boundary_types: CPP_SCOPE_BOUNDARIES,
     get_language: get_cpp,
     scope_resolve: Some(&CPP_SCOPE_CONFIG),
 };
