@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use colored::Colorize;
@@ -21,7 +21,7 @@ fn wrapper_script() -> String {
     "#!/bin/sh\n\
      # Wrapper for git diff.external: translates git's 7-arg format to sem diff\n\
      # Args: path old-file old-hex old-mode new-file new-hex new-mode\n\
-     exec sem diff \"$2\" \"$5\"\n"
+     exec sem diff --label \"$1\" \"$2\" \"$5\"\n"
         .to_string()
 }
 
@@ -30,18 +30,8 @@ fn wrapper_script() -> String {
     "@echo off\r\n\
      rem Wrapper for git diff.external: translates git's 7-arg format to sem diff\r\n\
      rem Args: path old-file old-hex old-mode new-file new-hex new-mode\r\n\
-     sem diff \"%~2\" \"%~5\"\r\n"
+     sem diff --label \"%~1\" \"%~2\" \"%~5\"\r\n"
         .to_string()
-}
-
-#[cfg(unix)]
-fn wrapper_name() -> &'static str {
-    "sem-diff-wrapper"
-}
-
-#[cfg(windows)]
-fn wrapper_name() -> &'static str {
-    "sem-diff-wrapper.bat"
 }
 
 #[cfg(unix)]
@@ -55,6 +45,69 @@ fn set_executable(path: &std::path::Path) -> Result<(), Box<dyn std::error::Erro
 fn set_executable(_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     // .bat files are executable by default on Windows
     Ok(())
+}
+
+fn diff_external_value() -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--global", "--get", "diff.external"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn is_configured_wrapper(value: &str, wrapper_path: &Path) -> bool {
+    let value_path = Path::new(value);
+
+    value
+        == wrapper_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+        || value_path == wrapper_path
+        || matches!(
+            (
+                std::fs::canonicalize(value_path),
+                std::fs::canonicalize(wrapper_path)
+            ),
+            (Ok(value), Ok(wrapper)) if value == wrapper
+        )
+}
+
+fn wrapper_is_owned(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|content| content == wrapper_script())
+}
+
+fn git_path(path: &str) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-path", path])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if resolved.is_empty() {
+        return None;
+    }
+
+    let path = PathBuf::from(resolved);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(path))
+    }
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -82,7 +135,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set diff.external globally
     let status = Command::new("git")
-        .args(["config", "--global", "diff.external", wrapper_name()])
+        .arg("config")
+        .arg("--global")
+        .arg("diff.external")
+        .arg(&path)
         .status()?;
     if !status.success() {
         return Err("Failed to set diff.external in git config".into());
@@ -90,7 +146,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{} Set git config --global diff.external = {}",
         "✓".green().bold(),
-        wrapper_name(),
+        path.display(),
     );
 
     // Install pre-commit hook if we're in a git repo
@@ -121,60 +177,23 @@ fn pre_commit_hook_section() -> String {
     )
 }
 
-fn resolve_hooks_dir() -> Option<PathBuf> {
-    // Respect core.hooksPath if set
-    let hooks_path = Command::new("git")
-        .args(["config", "core.hooksPath"])
-        .output();
-
-    if let Ok(output) = &hooks_path {
-        if output.status.success() {
-            let custom = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !custom.is_empty() {
-                let p = PathBuf::from(&custom);
-                // Could be relative to repo root
-                if p.is_absolute() {
-                    return Some(p);
-                }
-                // Resolve relative to working tree
-                if let Ok(wt) = Command::new("git")
-                    .args(["rev-parse", "--show-toplevel"])
-                    .output()
-                {
-                    if wt.status.success() {
-                        let root = String::from_utf8_lossy(&wt.stdout).trim().to_string();
-                        return Some(PathBuf::from(root).join(custom));
-                    }
-                }
-            }
-        }
-    }
-
-    // Default: .git/hooks
-    let git_dir = Command::new("git")
-        .args(["rev-parse", "--git-dir"])
-        .output();
-
-    match git_dir {
-        Ok(output) if output.status.success() => {
-            let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Some(PathBuf::from(dir).join("hooks"))
-        }
-        _ => None,
-    }
+fn resolve_pre_commit_hook_path() -> Option<PathBuf> {
+    git_path("hooks/pre-commit")
 }
 
 fn install_pre_commit_hook() {
-    let hooks_dir = match resolve_hooks_dir() {
-        Some(d) => d,
+    let hook_path = match resolve_pre_commit_hook_path() {
+        Some(p) => p,
         None => return, // Not in a git repo, skip
+    };
+    let hooks_dir = match hook_path.parent() {
+        Some(d) => d,
+        None => return,
     };
 
     if !hooks_dir.exists() {
-        let _ = fs::create_dir_all(&hooks_dir);
+        let _ = fs::create_dir_all(hooks_dir);
     }
-
-    let hook_path = hooks_dir.join("pre-commit");
 
     if hook_path.exists() {
         // Append sem section if not already present
@@ -220,31 +239,54 @@ fn install_pre_commit_hook() {
 }
 
 pub fn unsetup() -> Result<(), Box<dyn std::error::Error>> {
-    // Unset diff.external
-    let status = Command::new("git")
-        .args(["config", "--global", "--unset", "diff.external"])
-        .status()?;
-    if status.success() {
-        println!(
-            "{} Removed diff.external from global git config",
-            "✓".green().bold(),
-        );
-    } else {
-        println!(
-            "{} diff.external was not set in global git config",
-            "✓".green().bold(),
-        );
+    let path = wrapper_path();
+    let existing_diff_external = diff_external_value();
+    let wrapper_configured = existing_diff_external
+        .as_deref()
+        .is_some_and(|value| is_configured_wrapper(value, &path));
+
+    match existing_diff_external {
+        Some(value) if wrapper_configured => {
+            let status = Command::new("git")
+                .args(["config", "--global", "--unset", "diff.external"])
+                .status()?;
+            if status.success() {
+                println!(
+                    "{} Removed diff.external from global git config",
+                    "✓".green().bold(),
+                );
+            }
+        }
+        Some(value) => {
+            println!(
+                "{} Leaving diff.external untouched ({})",
+                "note:".yellow().bold(),
+                value
+            );
+        }
+        None => {
+            println!(
+                "{} diff.external was not set in global git config",
+                "✓".green().bold(),
+            );
+        }
     }
 
-    // Remove wrapper script
-    let path = wrapper_path();
     if path.exists() {
-        fs::remove_file(&path)?;
-        println!(
-            "{} Removed wrapper script at {}",
-            "✓".green().bold(),
-            path.display()
-        );
+        if wrapper_configured && wrapper_is_owned(&path) {
+            fs::remove_file(&path)?;
+            println!(
+                "{} Removed wrapper script at {}",
+                "✓".green().bold(),
+                path.display()
+            );
+        } else {
+            println!(
+                "{} leaving {} untouched (not owned by this sem install)",
+                "note:".yellow().bold(),
+                path.display()
+            );
+        }
     }
 
     // Remove pre-commit hook section
@@ -259,12 +301,10 @@ pub fn unsetup() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn remove_pre_commit_hook() {
-    let hooks_dir = match resolve_hooks_dir() {
-        Some(d) => d,
+    let hook_path = match resolve_pre_commit_hook_path() {
+        Some(p) => p,
         None => return,
     };
-
-    let hook_path = hooks_dir.join("pre-commit");
     if !hook_path.exists() {
         return;
     }
