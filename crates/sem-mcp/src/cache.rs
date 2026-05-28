@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use sem_core::model::entity::SemanticEntity;
 use sem_core::parser::graph::{EntityGraph, EntityInfo, EntityRef, RefType};
 
@@ -13,6 +13,12 @@ pub const CACHE_INDEXES: &[(&str, &str, &str)] = &[
     ("idx_entities_parent_id", "entities", "parent_id"),
     ("idx_edges_from_entity", "edges", "from_entity"),
     ("idx_edges_to_entity", "edges", "to_entity"),
+];
+
+// Cache-only keys use a NUL prefix so they cannot collide with git paths.
+pub const CACHE_MANIFEST_FILES: &[(&str, &str)] = &[
+    (".semrc", "\0sem-manifest:.semrc"),
+    (".gitattributes", "\0sem-manifest:.gitattributes"),
 ];
 
 const CACHE_SCHEMA_SQL: &str = "
@@ -82,22 +88,128 @@ pub struct PartialCache {
 }
 
 /// Compute a manifest hash from file paths + mtimes.
-/// If any file can't be stat'd, returns None.
+/// If any source file can't be stat'd, returns None.
 pub fn compute_manifest_hash(root: &Path, files: &[String]) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for file in files {
         let full = root.join(file);
-        let meta = std::fs::metadata(&full).ok()?;
-        let mtime = meta.modified().ok()?;
-        let dur = mtime
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
+        let (secs, nanos) = file_mtime_parts(&full)?;
         file.hash(&mut hasher);
-        dur.as_secs().hash(&mut hasher);
-        dur.subsec_nanos().hash(&mut hasher);
+        secs.hash(&mut hasher);
+        nanos.hash(&mut hasher);
     }
     files.len().hash(&mut hasher);
+
+    for (file_name, _) in CACHE_MANIFEST_FILES {
+        let full = root.join(file_name);
+        if !full.exists() {
+            continue;
+        }
+
+        file_name.hash(&mut hasher);
+        match file_mtime_parts(&full) {
+            Some((secs, nanos)) => {
+                true.hash(&mut hasher);
+                secs.hash(&mut hasher);
+                nanos.hash(&mut hasher);
+            }
+            None => {
+                false.hash(&mut hasher);
+            }
+        }
+    }
+
     Some(hasher.finish())
+}
+
+pub fn file_mtime_parts(path: &Path) -> Option<(i64, i64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    let dur = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Some((dur.as_secs() as i64, dur.subsec_nanos() as i64))
+}
+
+pub fn is_cache_manifest_key(path: &str) -> bool {
+    CACHE_MANIFEST_FILES
+        .iter()
+        .any(|(_, cache_key)| *cache_key == path)
+}
+
+pub fn is_manifest_file_name(path: &str) -> bool {
+    CACHE_MANIFEST_FILES
+        .iter()
+        .any(|(file_name, _)| *file_name == path)
+}
+
+pub fn source_file_count(files: &[String]) -> usize {
+    files
+        .iter()
+        .filter(|file| !is_manifest_file_name(file))
+        .count()
+}
+
+fn cached_file_mtime(conn: &Connection, cache_key: &str) -> Option<(i64, i64)> {
+    conn.query_row(
+        "SELECT mtime_secs, mtime_nanos FROM files WHERE path = ?1",
+        params![cache_key],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .ok()
+}
+
+pub fn is_manifest_stale(conn: &Connection, root: &Path) -> bool {
+    CACHE_MANIFEST_FILES.iter().any(|(file_name, cache_key)| {
+        let full = root.join(file_name);
+        let cached = cached_file_mtime(conn, cache_key);
+
+        match (full.exists(), cached) {
+            (true, None) | (false, Some(_)) => true,
+            (false, None) => false,
+            (true, Some((secs, nanos))) => match file_mtime_parts(&full) {
+                Some((current_secs, current_nanos)) => {
+                    secs != current_secs || nanos != current_nanos
+                }
+                None => true,
+            },
+        }
+    })
+}
+
+pub fn manifest_entry_count(conn: &Connection) -> i64 {
+    CACHE_MANIFEST_FILES
+        .iter()
+        .map(|(_, cache_key)| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM files WHERE path = ?1",
+                params![cache_key],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+        })
+        .sum()
+}
+
+pub fn refresh_manifest_entries(tx: &Transaction<'_>, root: &Path) -> Result<(), rusqlite::Error> {
+    {
+        let mut delete = tx.prepare("DELETE FROM files WHERE path = ?1")?;
+        for (_, cache_key) in CACHE_MANIFEST_FILES {
+            delete.execute(params![cache_key])?;
+        }
+    }
+
+    let mut insert = tx.prepare(
+        "INSERT OR REPLACE INTO files (path, mtime_secs, mtime_nanos) VALUES (?1, ?2, ?3)",
+    )?;
+    for (file_name, cache_key) in CACHE_MANIFEST_FILES {
+        let full = root.join(file_name);
+        if let Some((secs, nanos)) = file_mtime_parts(&full) {
+            insert.execute(params![cache_key, secs, nanos])?;
+        }
+    }
+
+    Ok(())
 }
 
 pub struct DiskCache {
@@ -132,21 +244,17 @@ impl DiskCache {
             let mut stmt = tx
                 .prepare("INSERT INTO files (path, mtime_secs, mtime_nanos) VALUES (?1, ?2, ?3)")?;
             for file in files {
+                if is_manifest_file_name(file) {
+                    continue;
+                }
                 let full = root.join(file);
-                if let Ok(meta) = std::fs::metadata(&full) {
-                    if let Ok(mtime) = meta.modified() {
-                        let dur = mtime
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default();
-                        stmt.execute(params![
-                            file,
-                            dur.as_secs() as i64,
-                            dur.subsec_nanos() as i64
-                        ])?;
-                    }
+                if let Some((secs, nanos)) = file_mtime_parts(&full) {
+                    stmt.execute(params![file, secs, nanos])?;
                 }
             }
         }
+
+        refresh_manifest_entries(&tx, root)?;
 
         {
             let mut stmt = tx.prepare(
@@ -197,12 +305,16 @@ impl DiskCache {
         root: &Path,
         files: &[String],
     ) -> Option<(EntityGraph, Vec<SemanticEntity>)> {
+        if is_manifest_stale(&self.conn, root) {
+            return None;
+        }
+
         // Verify file count matches
         let cached_count: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
             .ok()?;
-        if cached_count as usize != files.len() {
+        if (cached_count - manifest_entry_count(&self.conn)) as usize != source_file_count(files) {
             return None;
         }
 
@@ -212,17 +324,16 @@ impl DiskCache {
             .prepare("SELECT mtime_secs, mtime_nanos FROM files WHERE path = ?1")
             .ok()?;
         for file in files {
+            if is_manifest_file_name(file) {
+                continue;
+            }
             let full = root.join(file);
-            let meta = std::fs::metadata(&full).ok()?;
-            let mtime = meta.modified().ok()?;
-            let dur = mtime
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
+            let (current_secs, current_nanos) = file_mtime_parts(&full)?;
 
             let (secs, nanos): (i64, i64) = stmt
                 .query_row(params![file], |row| Ok((row.get(0)?, row.get(1)?)))
                 .ok()?;
-            if secs != dur.as_secs() as i64 || nanos != dur.subsec_nanos() as i64 {
+            if secs != current_secs || nanos != current_nanos {
                 return None;
             }
         }
@@ -303,6 +414,10 @@ impl DiskCache {
     /// Load a partial cache: identify stale files and return clean cached data.
     /// Returns None if cache is empty or ALL files are stale (full rebuild is better).
     pub fn load_partial(&self, root: &Path, files: &[String]) -> Option<PartialCache> {
+        if is_manifest_stale(&self.conn, root) {
+            return None;
+        }
+
         let mut stmt = self
             .conn
             .prepare("SELECT path, mtime_secs, mtime_nanos FROM files")
@@ -322,49 +437,60 @@ impl DiskCache {
             return None;
         }
 
-        let current_set: HashSet<&str> = files.iter().map(|s| s.as_str()).collect();
+        let source_files: Vec<&String> = files
+            .iter()
+            .filter(|file| !is_manifest_file_name(file))
+            .collect();
+        let source_file_count = source_files.len();
+        let current_set: HashSet<&str> = source_files.iter().map(|file| file.as_str()).collect();
 
-        let mut stale_files: Vec<String> = Vec::new();
-        for file in files {
+        let mut stale_source_files: Vec<String> = Vec::new();
+        let mut stale_current_file_count = 0;
+        for file in source_files {
             match cached_files.get(file) {
                 Some(&(secs, nanos)) => {
                     let full = root.join(file);
-                    let meta = std::fs::metadata(&full).ok();
-                    let is_stale = meta
-                        .and_then(|m| m.modified().ok())
-                        .map(|mtime| {
-                            let dur = mtime
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default();
-                            secs != dur.as_secs() as i64 || nanos != dur.subsec_nanos() as i64
+                    let is_stale = file_mtime_parts(&full)
+                        .map(|(current_secs, current_nanos)| {
+                            secs != current_secs || nanos != current_nanos
                         })
                         .unwrap_or(true);
                     if is_stale {
-                        stale_files.push(file.clone());
+                        stale_current_file_count += 1;
+                        stale_source_files.push(file.clone());
                     }
                 }
                 None => {
-                    stale_files.push(file.clone());
+                    stale_current_file_count += 1;
+                    stale_source_files.push(file.clone());
                 }
             }
         }
 
         // Files in cache but not on disk anymore
+        let mut deleted_cached_files: Vec<String> = Vec::new();
         for cached_path in cached_files.keys() {
-            if !current_set.contains(cached_path.as_str()) {
-                stale_files.push(cached_path.clone());
+            if !is_cache_manifest_key(cached_path)
+                && !is_manifest_file_name(cached_path)
+                && !current_set.contains(cached_path.as_str())
+            {
+                deleted_cached_files.push(cached_path.clone());
             }
         }
 
-        if stale_files.is_empty() {
+        if stale_source_files.is_empty() && deleted_cached_files.is_empty() {
             return None;
         }
 
-        if stale_files.len() >= files.len() {
+        if stale_current_file_count >= source_file_count {
             return None;
         }
 
-        let stale_set: HashSet<&str> = stale_files.iter().map(|s| s.as_str()).collect();
+        let stale_set: HashSet<&str> = stale_source_files
+            .iter()
+            .chain(deleted_cached_files.iter())
+            .map(|s| s.as_str())
+            .collect();
 
         // Load ALL entities, split into clean vs stale-file
         let mut entity_stmt = self
@@ -426,13 +552,8 @@ impl DiskCache {
             .filter_map(|r| r.ok())
             .collect();
 
-        let stale_files: Vec<String> = stale_files
-            .into_iter()
-            .filter(|f| current_set.contains(f.as_str()))
-            .collect();
-
         Some(PartialCache {
-            stale_files,
+            stale_files: stale_source_files,
             cached_entities,
             cached_edges,
             stale_file_entities,
@@ -448,19 +569,31 @@ impl DiskCache {
         graph: &EntityGraph,
         entities: &[SemanticEntity],
     ) -> Result<(), rusqlite::Error> {
-        let stale_set: HashSet<&str> = stale_files.iter().map(|s| s.as_str()).collect();
+        let source_stale_files: Vec<&String> = stale_files
+            .iter()
+            .filter(|file| !is_manifest_file_name(file))
+            .collect();
+        let stale_set: HashSet<&str> = source_stale_files
+            .iter()
+            .map(|file| file.as_str())
+            .collect();
 
         let tx = self.conn.unchecked_transaction()?;
+        let mut deleted_cached_files = Vec::new();
 
         {
             let mut del_files = tx.prepare("DELETE FROM files WHERE path = ?1")?;
-            for f in stale_files {
+            for f in &source_stale_files {
                 del_files.execute(params![f])?;
             }
         }
 
         {
-            let current_set: HashSet<&str> = all_files.iter().map(|s| s.as_str()).collect();
+            let current_set: HashSet<&str> = all_files
+                .iter()
+                .map(|s| s.as_str())
+                .filter(|path| !is_manifest_file_name(path))
+                .collect();
             let mut cached_stmt = tx.prepare("SELECT path FROM files")?;
             let cached_paths: Vec<String> = cached_stmt
                 .query_map([], |row| row.get(0))
@@ -468,8 +601,9 @@ impl DiskCache {
                 .unwrap_or_default();
             let mut del_files = tx.prepare("DELETE FROM files WHERE path = ?1")?;
             for path in &cached_paths {
-                if !current_set.contains(path.as_str()) {
+                if !is_cache_manifest_key(path) && !current_set.contains(path.as_str()) {
                     del_files.execute(params![path])?;
+                    deleted_cached_files.push(path.clone());
                 }
             }
         }
@@ -478,26 +612,22 @@ impl DiskCache {
             let mut ins = tx.prepare(
                 "INSERT OR REPLACE INTO files (path, mtime_secs, mtime_nanos) VALUES (?1, ?2, ?3)",
             )?;
-            for file in stale_files {
+            for file in &source_stale_files {
                 let full = root.join(file);
-                if let Ok(meta) = std::fs::metadata(&full) {
-                    if let Ok(mtime) = meta.modified() {
-                        let dur = mtime
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default();
-                        ins.execute(params![
-                            file,
-                            dur.as_secs() as i64,
-                            dur.subsec_nanos() as i64
-                        ])?;
-                    }
+                if let Some((secs, nanos)) = file_mtime_parts(&full) {
+                    ins.execute(params![file, secs, nanos])?;
                 }
             }
         }
 
+        refresh_manifest_entries(&tx, root)?;
+
         {
             let mut del = tx.prepare("DELETE FROM entities WHERE file_path = ?1")?;
-            for f in stale_files {
+            for f in &source_stale_files {
+                del.execute(params![f])?;
+            }
+            for f in &deleted_cached_files {
                 del.execute(params![f])?;
             }
         }
@@ -564,6 +694,40 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn empty_graph() -> EntityGraph {
+        EntityGraph::from_parts(HashMap::new(), Vec::new())
+    }
+
+    fn sample_files(root: &Path) -> Vec<String> {
+        write_file(&root.join("sample.foo"), "export const alpha = () => 1;\n");
+        vec!["sample.foo".to_string()]
+    }
+
+    fn save_empty_cache(root: &Path, files: &[String]) -> DiskCache {
+        let cache = DiskCache::open(root).unwrap();
+        cache.save(root, files, &empty_graph(), &[]).unwrap();
+        assert!(cache.load(root, files).is_some());
+        cache
+    }
+
+    fn rewrite_after_mtime_tick(path: &Path, content: &str) {
+        let before = file_mtime_parts(path).unwrap();
+
+        for _ in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            write_file(path, content);
+            if file_mtime_parts(path).unwrap() != before {
+                return;
+            }
+        }
+
+        panic!("mtime did not change for {}", path.display());
     }
 
     fn read_user_version(cache: &DiskCache) -> i32 {
@@ -643,6 +807,81 @@ mod tests {
              VALUES ('stale-id', 'other-id', 'calls');"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn manifest_hash_tracks_gitattributes_changes() {
+        let root = temp_repo_root("gitattributes-manifest-hash");
+        let files = sample_files(&root);
+        let gitattributes = root.join(".gitattributes");
+
+        let without_gitattributes = compute_manifest_hash(&root, &files).unwrap();
+
+        write_file(&gitattributes, "*.foo linguist-language=javascript\n");
+        let with_gitattributes = compute_manifest_hash(&root, &files).unwrap();
+        assert_ne!(without_gitattributes, with_gitattributes);
+
+        rewrite_after_mtime_tick(&gitattributes, "*.foo linguist-language=typescript\n");
+        let modified_gitattributes = compute_manifest_hash(&root, &files).unwrap();
+        assert_ne!(with_gitattributes, modified_gitattributes);
+
+        std::fs::remove_file(&gitattributes).unwrap();
+        let removed_gitattributes = compute_manifest_hash(&root, &files).unwrap();
+        assert_eq!(without_gitattributes, removed_gitattributes);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_invalidates_when_gitattributes_is_added() {
+        let root = temp_repo_root("gitattributes-added");
+        let files = sample_files(&root);
+        let cache = save_empty_cache(&root, &files);
+
+        write_file(
+            &root.join(".gitattributes"),
+            "*.foo linguist-language=javascript\n",
+        );
+
+        assert!(cache.load(&root, &files).is_none());
+        assert!(cache.load_partial(&root, &files).is_none());
+
+        drop(cache);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_invalidates_when_gitattributes_is_modified() {
+        let root = temp_repo_root("gitattributes-modified");
+        let files = sample_files(&root);
+        let gitattributes = root.join(".gitattributes");
+        write_file(&gitattributes, "*.foo linguist-language=javascript\n");
+        let cache = save_empty_cache(&root, &files);
+
+        rewrite_after_mtime_tick(&gitattributes, "*.foo linguist-language=typescript\n");
+
+        assert!(cache.load(&root, &files).is_none());
+        assert!(cache.load_partial(&root, &files).is_none());
+
+        drop(cache);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_invalidates_when_gitattributes_is_removed() {
+        let root = temp_repo_root("gitattributes-removed");
+        let files = sample_files(&root);
+        let gitattributes = root.join(".gitattributes");
+        write_file(&gitattributes, "*.foo linguist-language=javascript\n");
+        let cache = save_empty_cache(&root, &files);
+
+        std::fs::remove_file(&gitattributes).unwrap();
+
+        assert!(cache.load(&root, &files).is_none());
+        assert!(cache.load_partial(&root, &files).is_none());
+
+        drop(cache);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
