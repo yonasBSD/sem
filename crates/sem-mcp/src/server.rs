@@ -1,6 +1,7 @@
 use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ use sem_core::parser::differ::compute_semantic_diff;
 use sem_core::parser::graph::EntityGraph;
 use sem_core::parser::plugins::create_default_registry;
 use sem_core::parser::registry::ParserRegistry;
+use sem_core::utils::scan::{is_default_excluded, is_probably_binary_path};
 use tokio::sync::Mutex;
 
 use crate::cache;
@@ -38,6 +40,15 @@ fn content_hash_u64(content: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
     hasher.finish()
+}
+
+const BINARY_PROBE_BYTES: usize = 4096;
+
+fn has_nul_byte(path: &Path) -> std::io::Result<bool> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0; BINARY_PROBE_BYTES];
+    let len = file.read(&mut buffer)?;
+    Ok(buffer[..len].contains(&0))
 }
 
 /// Cached entity graph + all entities, keyed by manifest hash.
@@ -133,22 +144,34 @@ impl SemServer {
             ));
         }
         let mut files = Vec::new();
-        let walker = ignore::WalkBuilder::new(root)
+        let mut builder = ignore::WalkBuilder::new(root);
+        builder
             .hidden(true)
             .git_ignore(true)
             .git_global(true)
-            .git_exclude(true)
-            .build();
+            .git_exclude(true);
+        let semignore = root.join(".semignore");
+        if semignore.exists() {
+            builder.add_ignore(semignore);
+        }
+        let walker = builder.build();
         for entry in walker.flatten() {
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
             if let Ok(rel) = path.strip_prefix(root) {
-                let rel_str = rel.to_string_lossy().to_string();
-                if registry.get_plugin(&rel_str).is_some() {
-                    files.push(rel_str);
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                if is_default_excluded(&rel_str) || is_probably_binary_path(&rel_str) {
+                    continue;
                 }
+                if registry.get_plugin(&rel_str).is_none() {
+                    continue;
+                }
+                if has_nul_byte(path).unwrap_or(false) {
+                    continue;
+                }
+                files.push(rel_str);
             }
         }
         files.sort();
@@ -162,22 +185,34 @@ impl SemServer {
         registry: &ParserRegistry,
     ) -> Result<Vec<String>, String> {
         let mut files = Vec::new();
-        let walker = ignore::WalkBuilder::new(dir)
+        let mut builder = ignore::WalkBuilder::new(dir);
+        builder
             .hidden(true)
             .git_ignore(true)
             .git_global(true)
-            .git_exclude(true)
-            .build();
+            .git_exclude(true);
+        let semignore = prefix_root.join(".semignore");
+        if semignore.exists() {
+            builder.add_ignore(semignore);
+        }
+        let walker = builder.build();
         for entry in walker.flatten() {
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
             if let Ok(rel) = path.strip_prefix(prefix_root) {
-                let rel_str = rel.to_string_lossy().to_string();
-                if registry.get_plugin(&rel_str).is_some() {
-                    files.push(rel_str);
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                if is_default_excluded(&rel_str) || is_probably_binary_path(&rel_str) {
+                    continue;
                 }
+                if registry.get_plugin(&rel_str).is_none() {
+                    continue;
+                }
+                if has_nul_byte(path).unwrap_or(false) {
+                    continue;
+                }
+                files.push(rel_str);
             }
         }
         files.sort();
@@ -859,6 +894,7 @@ mod tests {
     use sem_core::parser::plugins::create_default_registry;
     use std::fs;
     use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::TempDir;
 
     fn git(repo: &TempDir, args: &[&str]) {
@@ -925,6 +961,20 @@ mod tests {
             .iter()
             .map(|entry| entry["change_type"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    fn temp_dir() -> PathBuf {
+        let name = format!(
+            "sem-mcp-files-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(name);
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 
     #[test]
@@ -1018,6 +1068,24 @@ mod tests {
         let expected = vec!["added", "renamed", "moved", "modified (logic)"];
         assert_eq!(mcp_log_labels(&repo, "renamed_func", "b.py"), expected);
         assert_eq!(mcp_log_labels(&repo, "original", "a.py"), expected);
+    }
+
+    #[test]
+    fn find_supported_files_skips_binary_and_default_excludes() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("src/app.js"), "export function app() {}\n").unwrap();
+        fs::write(root.join("src/blob.weird"), b"abc\0def").unwrap();
+        fs::write(root.join("src/icon.png"), b"\x89PNG\r\n").unwrap();
+        fs::write(root.join("dist/generated.js"), "export function generated() {}\n").unwrap();
+
+        let registry = create_default_registry();
+        let files = SemServer::find_supported_files(&root, &registry).unwrap();
+
+        assert_eq!(files, vec!["src/app.js".to_string()]);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
