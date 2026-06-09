@@ -316,11 +316,14 @@ enum Commands {
     Setup,
     /// Restore default `git diff` behavior
     Unsetup,
-    /// Log in to sem cloud with your API key
+    /// Log in to sem cloud
     Login {
-        /// API key (or omit to enter interactively)
-        #[arg(long)]
+        /// API key (omit for interactive prompt, or use --github)
+        #[arg()]
         key: Option<String>,
+        /// Log in with GitHub
+        #[arg(long)]
+        github: bool,
         /// API endpoint (default: https://api.sem.sh)
         #[arg(long)]
         endpoint: Option<String>,
@@ -593,8 +596,17 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Login { key, endpoint }) => {
-            if let Err(e) = commands::cloud::login(key, endpoint) {
+        Some(Commands::Login {
+            key,
+            github,
+            endpoint,
+        }) => {
+            let result = if github {
+                commands::cloud::login_github(endpoint)
+            } else {
+                commands::cloud::login(key, endpoint)
+            };
+            if let Err(e) = result {
                 eprintln!("{} {}", "error:".red().bold(), e);
                 std::process::exit(1);
             }
