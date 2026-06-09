@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/25348" target="_blank"><img src="https://trendshift.io/api/badge/repositories/25348" alt="Ataraxy-Labs%2Fsem | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
+
+<p align="center">
   <strong>Semantic version control built on Git.</strong><br>
   Instead of lines changed, sem tells you what entities changed: functions, methods, classes.
 </p>
