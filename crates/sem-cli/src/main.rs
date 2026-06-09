@@ -316,6 +316,19 @@ enum Commands {
     Setup,
     /// Restore default `git diff` behavior
     Unsetup,
+    /// Log in to sem cloud with your API key
+    Login {
+        /// API key (or omit to enter interactively)
+        #[arg(long)]
+        key: Option<String>,
+        /// API endpoint (default: https://api.sem.sh)
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// Log out of sem cloud
+    Logout,
+    /// Show current sem cloud identity
+    Whoami,
     /// Generate shell completions
     Completions {
         /// The shell to generate the completions for
@@ -576,6 +589,24 @@ fn main() {
         }
         Some(Commands::Unsetup) => {
             if let Err(e) = commands::setup::unsetup() {
+                eprintln!("{} {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Login { key, endpoint }) => {
+            if let Err(e) = commands::cloud::login(key, endpoint) {
+                eprintln!("{} {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Logout) => {
+            if let Err(e) = commands::cloud::logout() {
+                eprintln!("{} {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Whoami) => {
+            if let Err(e) = commands::cloud::whoami() {
                 eprintln!("{} {}", "error:".red().bold(), e);
                 std::process::exit(1);
             }
