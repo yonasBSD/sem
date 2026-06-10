@@ -318,13 +318,10 @@ enum Commands {
     Unsetup,
     /// Log in to sem cloud
     Login {
-        /// API key (omit for interactive prompt, or use --github)
+        /// API key (omit to log in with GitHub)
         #[arg()]
         key: Option<String>,
-        /// Log in with GitHub
-        #[arg(long)]
-        github: bool,
-        /// API endpoint (default: https://api.sem.sh)
+        /// API endpoint
         #[arg(long)]
         endpoint: Option<String>,
     },
@@ -596,16 +593,8 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Login {
-            key,
-            github,
-            endpoint,
-        }) => {
-            let result = if github {
-                commands::cloud::login_github(endpoint)
-            } else {
-                commands::cloud::login(key, endpoint)
-            };
+        Some(Commands::Login { key, endpoint }) => {
+            let result = commands::cloud::login(key, endpoint);
             if let Err(e) = result {
                 eprintln!("{} {}", "error:".red().bold(), e);
                 std::process::exit(1);

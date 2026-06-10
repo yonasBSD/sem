@@ -13,6 +13,10 @@ pub struct EntitiesOptions {
 }
 
 pub fn entities_command(opts: EntitiesOptions) {
+    if super::cloud::try_cloud_entities(&opts).is_some() {
+        return;
+    }
+
     let root = Path::new(&opts.cwd);
     let registry = super::create_registry(&opts.cwd);
     let path_arg = opts.path.as_deref().filter(|p| !p.is_empty()).unwrap_or(".");
