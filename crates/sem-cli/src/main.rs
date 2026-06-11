@@ -330,6 +330,8 @@ enum Commands {
     Logout,
     /// Show current sem cloud identity
     Whoami,
+    /// Update sem to the latest released version
+    Update,
     /// Generate shell completions
     Completions {
         /// The shell to generate the completions for
@@ -360,6 +362,7 @@ fn telemetry_command_name(command: &Option<Commands>) -> Option<&'static str> {
         Some(Commands::Login { .. }) => "login",
         Some(Commands::Logout) => "logout",
         Some(Commands::Whoami) => "whoami",
+        Some(Commands::Update) => "update",
         Some(Commands::Completions { .. }) => "completions",
         Some(Commands::TelemetryFlush) => return None,
         None => "diff",
@@ -641,6 +644,12 @@ fn main() {
         }
         Some(Commands::Whoami) => {
             if let Err(e) = commands::cloud::whoami() {
+                eprintln!("{} {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Update) => {
+            if let Err(e) = commands::update::run() {
                 eprintln!("{} {}", "error:".red().bold(), e);
                 std::process::exit(1);
             }

@@ -64,6 +64,12 @@ bun add -d @ataraxy-labs/sem
 bun pm trust @ataraxy-labs/sem
 ```
 
+Once installed, update to the latest release any time:
+
+```bash
+sem update
+```
+
 Or build from source (requires Rust):
 
 ```bash
