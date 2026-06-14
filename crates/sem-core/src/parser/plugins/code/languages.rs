@@ -333,7 +333,7 @@ fn get_dart() -> Option<Language> {
 
 #[cfg(feature = "lang-perl")]
 fn get_perl() -> Option<Language> {
-    Some(tree_sitter_perl_next::LANGUAGE.into())
+    Some(ts_parser_perl::LANGUAGE.into())
 }
 
 #[cfg(feature = "lang-ocaml")]

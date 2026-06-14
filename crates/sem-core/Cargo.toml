@@ -55,7 +55,7 @@ lang-hcl = ["dep:tree-sitter-hcl"]
 lang-kotlin = ["dep:tree-sitter-kotlin-ng"]
 lang-xml = ["dep:tree-sitter-xml"]
 lang-dart = ["dep:tree-sitter-dart"]
-lang-perl = ["dep:tree-sitter-perl-next"]
+lang-perl = ["dep:ts-parser-perl"]
 lang-ocaml = ["dep:tree-sitter-ocaml"]
 lang-scala = ["dep:tree-sitter-scala"]
 lang-zig = ["dep:tree-sitter-zig"]
@@ -93,7 +93,9 @@ tree-sitter-embedded-template = { version = "0.25", optional = true }
 tree-sitter-ocaml = { version = "0.24", optional = true }
 tree-sitter-htmlx-svelte = { version = "0.1.7", optional = true }
 tree-sitter-dart = { version = "0.2.0", optional = true }
-tree-sitter-perl-next = { version = "0.1", optional = true }
+# Official, actively-maintained Perl grammar (the -next crate was an
+# unattributed copy; this is a drop-in replacement, strictly newer). See #355.
+ts-parser-perl = { version = "1.1", optional = true }
 tree-sitter-scala = { version = "0.26", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
