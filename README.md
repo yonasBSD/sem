@@ -295,6 +295,7 @@ sem unsetup
 | Clojure | `.clj` `.cljs` `.cljc` | vars, functions, macros, multimethods, protocols, records, types |
 | D | `.d` `.di` | modules, functions, classes, structs, interfaces, unions, enums, templates, aliases, unittests |
 | Zig | `.zig` | functions, tests, variables |
+| SQL | `.sql` `.psql` `.pgsql` `.ddl` | tables, views, functions, indexes, types, schemas, triggers, sequences |
 
 Plus structured data formats:
 

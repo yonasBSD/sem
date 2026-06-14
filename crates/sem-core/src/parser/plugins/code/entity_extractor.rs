@@ -1705,6 +1705,17 @@ fn find_name_byte_range(node: Node, _source: &[u8]) -> Option<(usize, usize)> {
         }
     }
 
+    // SQL DDL: the created object's name is the first `identifier` or
+    // `object_reference` in source order (see extract_name for the rationale).
+    if node_type.starts_with("create_") {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "identifier" || child.kind() == "object_reference" {
+                return Some((child.start_byte(), child.end_byte()));
+            }
+        }
+    }
+
     // Fallback: first identifier child
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -2114,6 +2125,19 @@ fn extract_name(node: Node, source: &[u8]) -> Option<String> {
         }
     }
 
+    // SQL DDL: the created object's name is the first `identifier` or
+    // `object_reference` in source order. CREATE INDEX names a bare identifier
+    // before the `ON <table>` reference; CREATE TABLE/VIEW/FUNCTION name an
+    // object_reference (possibly schema-qualified) directly.
+    if node_type.starts_with("create_") {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "identifier" || child.kind() == "object_reference" {
+                return Some(node_text(child, source).to_string());
+            }
+        }
+    }
+
     // Fallback: first identifier child
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -2493,6 +2517,16 @@ fn map_node_type(tree_sitter_type: &str) -> &str {
         "property_declaration" | "property_signature" => "property",
         "annotation_type_declaration" => "annotation",
         "template_declaration" => "template",
+        // SQL (DDL) objects
+        "create_table" => "table",
+        "create_view" | "create_materialized_view" => "view",
+        "create_function" => "function",
+        "create_index" => "index",
+        "create_type" => "type",
+        "create_schema" => "schema",
+        "create_trigger" => "trigger",
+        "create_sequence" => "sequence",
+        "create_database" => "database",
         other => other,
     }
 }

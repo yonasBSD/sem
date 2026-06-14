@@ -2112,6 +2112,44 @@ extension type Wrapper(int value) implements int {}
     }
 
     #[test]
+    #[cfg(feature = "lang-sql")]
+    fn test_sql_entity_extraction() {
+        let code = r#"
+CREATE TABLE users (id INT PRIMARY KEY, name TEXT);
+CREATE VIEW active_users AS SELECT * FROM users WHERE active;
+CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ BEGIN RETURN a + b; END; $$ LANGUAGE plpgsql;
+CREATE INDEX idx_name ON users(name);
+CREATE TYPE mood AS ENUM ('sad', 'happy');
+CREATE SCHEMA myapp;
+CREATE MATERIALIZED VIEW mv AS SELECT 1;
+CREATE TABLE billing.invoices (id INT);
+"#;
+        let plugin = CodeParserPlugin;
+        let entities = plugin.extract_entities(code, "schema.sql");
+        let by_name = |n: &str| entities.iter().find(|e| e.name == n);
+
+        // object_reference names (incl. schema-qualified)
+        assert_eq!(by_name("users").map(|e| e.entity_type.as_str()), Some("table"));
+        assert_eq!(by_name("active_users").map(|e| e.entity_type.as_str()), Some("view"));
+        assert_eq!(by_name("add").map(|e| e.entity_type.as_str()), Some("function"));
+        assert_eq!(by_name("mood").map(|e| e.entity_type.as_str()), Some("type"));
+        assert_eq!(by_name("mv").map(|e| e.entity_type.as_str()), Some("view"));
+        assert_eq!(
+            by_name("billing.invoices").map(|e| e.entity_type.as_str()),
+            Some("table"),
+            "schema-qualified table name should be preserved"
+        );
+
+        // CREATE INDEX / SCHEMA name a bare identifier, not the ON-table
+        assert_eq!(
+            by_name("idx_name").map(|e| e.entity_type.as_str()),
+            Some("index"),
+            "index should be named idx_name, not the table it indexes"
+        );
+        assert_eq!(by_name("myapp").map(|e| e.entity_type.as_str()), Some("schema"));
+    }
+
+    #[test]
     fn test_dart_top_level_function_includes_body() {
         let code = r#"
 int add(int a, int b) {

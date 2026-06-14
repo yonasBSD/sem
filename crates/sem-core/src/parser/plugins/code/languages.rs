@@ -336,6 +336,11 @@ fn get_perl() -> Option<Language> {
     Some(ts_parser_perl::LANGUAGE.into())
 }
 
+#[cfg(feature = "lang-sql")]
+fn get_sql() -> Option<Language> {
+    Some(tree_sitter_sequel::LANGUAGE.into())
+}
+
 #[cfg(feature = "lang-ocaml")]
 fn get_ocaml() -> Option<Language> {
     Some(tree_sitter_ocaml::LANGUAGE_OCAML.into())
@@ -965,6 +970,33 @@ static PERL_CONFIG: LanguageConfig = LanguageConfig {
     suppressed_nested_entities: &[],
     scope_boundary_types: &[],
     get_language: get_perl,
+    scope_resolve: None,
+};
+
+#[cfg(feature = "lang-sql")]
+static SQL_CONFIG: LanguageConfig = LanguageConfig {
+    id: "sql",
+    extensions: &[".sql", ".psql", ".pgsql", ".ddl"],
+    // DerekStride/tree-sitter-sql emits a dedicated create_* node per DDL
+    // object; the object name lives in an `object_reference > identifier`
+    // child, which the generic name extractor picks up.
+    entity_node_types: &[
+        "create_table",
+        "create_view",
+        "create_materialized_view",
+        "create_function",
+        "create_index",
+        "create_type",
+        "create_schema",
+        "create_trigger",
+        "create_sequence",
+        "create_database",
+    ],
+    container_node_types: &[],
+    call_entity_identifiers: &[],
+    suppressed_nested_entities: &[],
+    scope_boundary_types: &[],
+    get_language: get_sql,
     scope_resolve: None,
 };
 
@@ -2490,6 +2522,8 @@ macro_rules! all_configs {
             &DART_CONFIG,
             #[cfg(feature = "lang-perl")]
             &PERL_CONFIG,
+            #[cfg(feature = "lang-sql")]
+            &SQL_CONFIG,
             #[cfg(feature = "lang-ocaml")]
             &OCAML_CONFIG,
             #[cfg(feature = "lang-ocaml")]

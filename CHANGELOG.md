@@ -6,6 +6,7 @@ All notable changes to sem are documented in this file.
 
 ### Added
 
+- SQL support (`.sql`, `.psql`, `.pgsql`, `.ddl`) via the official DerekStride/tree-sitter-sql grammar. Extracts tables, views, materialized views, functions, indexes, types, schemas, triggers, sequences, and databases. Thanks @robahtou for the request (#339).
 - Start tracking project changes in `CHANGELOG.md`.
 - Add a pull request check that asks contributors to include a changelog entry.
 - `sem entities` accepts multiple file or directory path arguments.
