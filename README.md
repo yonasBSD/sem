@@ -19,7 +19,7 @@
   <a href="https://ataraxy-labs.com/blogs/code-is-not-text">Why sem?</a> ·
   <a href="#install">Install</a> ·
   <a href="#commands">Commands</a> ·
-  <a href="#mcp-server">MCP Server</a> ·
+  <a href="#use-with-ai-agents-mcp">Agents (MCP)</a> ·
   <a href="https://github.com/Ataraxy-Labs/sem/releases/latest">Releases</a>
 </p>
 
@@ -334,26 +334,34 @@ Three-phase entity matching:
 
 This means sem detects renames and moves, not just additions and deletions. Structural hashing also distinguishes cosmetic changes (whitespace, formatting) from real logic changes.
 
-## MCP Server
+## Use with AI agents (MCP)
 
-sem includes an MCP server with 6 tools for AI agents: `sem_entities`, `sem_diff`, `sem_blame`, `sem_impact`, `sem_log`, `sem_context`. These mirror the CLI commands exactly.
+`sem mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io) server over stdin/stdout. It's not a command you run and read yourself: it's a server your coding agent launches in the background so it can ask sem questions while it works. That's the reason `mcp` lives alongside the normal commands. The agent gets 6 tools, all entity-level: `sem_impact`, `sem_context`, `sem_diff`, `sem_entities`, `sem_blame`, `sem_log`.
+
+Why an agent wants these: instead of reading whole files and burning tokens, it can ask "what breaks if I change `submitOrder`" (`sem_impact`) or "give me just the context to refactor this function" (`sem_context`) and get a precise answer from the dependency graph.
+
+Add it once, then talk to your agent normally. It calls the tools on its own.
+
+**Claude Code:**
+
+```bash
+claude mcp add sem -- sem mcp
+```
+
+**Cursor, Claude Desktop, or any client with an `mcpServers` config:**
 
 ```json
 {
   "mcpServers": {
     "sem": {
-      "command": "sem-mcp"
+      "command": "sem",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-Install the MCP binary:
-
-```bash
-cd sem/crates
-cargo install --path sem-mcp
-```
+If `sem` isn't on the agent's PATH, use the absolute path to the binary. No separate install is needed: `sem mcp` ships in the same binary as every other command.
 
 ## JSON output
 
