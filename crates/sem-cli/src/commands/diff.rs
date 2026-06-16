@@ -1666,6 +1666,10 @@ fn run_diff_pipeline(
         return;
     }
 
+    // Spinner + rotating tip while we parse and diff. Strictly stderr/TTY, so
+    // it never touches the diff output on stdout, and clears before we print.
+    let prog = crate::progress::Progress::start("Computing semantic diff");
+
     let t2 = Instant::now();
     let registry = super::create_registry(&opts.cwd);
     let registry_ms = t2.elapsed().as_secs_f64() * 1000.0;
@@ -1674,6 +1678,8 @@ fn run_diff_pipeline(
     let binary_changes = collect_binary_file_changes(&file_changes);
     let mut result = compute_semantic_diff(&file_changes, &registry, None, None);
     let parse_diff_ms = t3.elapsed().as_secs_f64() * 1000.0;
+
+    prog.clear();
 
     // Filter out cosmetic-only changes when --no-cosmetics is set
     if opts.no_cosmetics {

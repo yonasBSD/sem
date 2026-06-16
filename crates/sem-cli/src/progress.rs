@@ -12,6 +12,29 @@ use indicatif::{ProgressBar, ProgressStyle};
 /// runs should stay silent and instant, like they do today.
 const SUMMARY_MIN: Duration = Duration::from_millis(150);
 
+/// Cross-promote other commands while the user waits. Shown dimmed under the
+/// spinner, one at a time. Kept short (one line, no wrap) and never suggests the
+/// command you're already running.
+const TIPS: &[&str] = &[
+    "sem impact <entity> shows everything that breaks if you change it",
+    "sem context <entity> packs the right code into a token budget for your agent",
+    "sem blame <file> shows who last touched each function, not each line",
+    "sem log <entity> traces how one function evolved across commits",
+    "sem entities <dir> lists functions and classes without opening files",
+    "sem graph maps your repo's entity dependency graph",
+    "Give your agent sem: claude mcp add sem -- sem mcp",
+];
+
+/// Pick a tip. Not cryptographic; just rotates by wall-clock nanoseconds so a
+/// different one tends to show each run.
+fn pick_tip() -> &'static str {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    TIPS[n % TIPS.len()]
+}
+
 fn enabled() -> bool {
     if std::env::var("SEM_NO_PROGRESS").is_ok_and(|v| !v.is_empty() && v != "0") {
         return false;
@@ -36,7 +59,12 @@ impl Progress {
                     .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"]),
             );
             pb.enable_steady_tick(Duration::from_millis(80));
-            pb.set_message(message.to_string());
+            // Show the work on the first line and a dim, rotating tip on the
+            // second, like the hints under Claude Code's spinner.
+            pb.set_message(format!(
+                "{message}\n  {}",
+                format!("Tip: {}", pick_tip()).dimmed()
+            ));
             Some(pb)
         } else {
             None
