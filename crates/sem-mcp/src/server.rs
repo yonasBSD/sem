@@ -154,13 +154,13 @@ impl SemServer {
                 .or_else(|| canonical_relative_path(repo_root, p))
                 .map(|path| normalize_relative_path(&path));
             let relative = relative_path
-                .map(|r| r.to_string_lossy().to_string())
-                .unwrap_or_else(|| file_path.to_string());
+                .map(|r| path_to_slash(&r))
+                .unwrap_or_else(|| file_path.replace('\\', "/"));
             (relative, p.to_path_buf())
         } else {
             let abs_path = repo_root.join(file_path);
             let relative_path = normalize_relative_path(p);
-            (relative_path.to_string_lossy().to_string(), abs_path)
+            (path_to_slash(&relative_path), abs_path)
         }
     }
 
@@ -1552,6 +1552,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn path_to_slash_converts_backslashes() {
+        assert_eq!(path_to_slash(Path::new("a\\b\\c.py")), "a/b/c.py");
+        assert_eq!(path_to_slash(Path::new("a/b/c.py")), "a/b/c.py");
+    }
+
+    #[test]
+    fn resolve_file_path_returns_forward_slashes() {
+        let root = temp_git_repo("forward-slash-relative");
+
+        let (rel_path, _) = SemServer::resolve_file_path(&root, "src/inner/file.py");
+
+        assert_eq!(rel_path, "src/inner/file.py");
+        assert!(!rel_path.contains('\\'));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn sem_entities_returns_tool_error_for_missing_path() {
         let root = temp_git_repo("missing-path");
@@ -1930,6 +1947,11 @@ fn normalize_relative_path(path: &Path) -> PathBuf {
     } else {
         normalized
     }
+}
+
+// Graph entity `file_path`s are forward-slash, so relative paths must be too or lookups miss on Windows.
+fn path_to_slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[derive(Clone)]
