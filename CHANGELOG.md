@@ -4,6 +4,8 @@ All notable changes to sem are documented in this file.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-06-23
+
 ### Added
 
 - `sem impact` can answer direct dependency queries from a fresh SQL topology cache without rebuilding the entity graph.
