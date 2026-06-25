@@ -348,6 +348,12 @@ Add it once, then talk to your agent normally. It calls the tools on its own.
 claude mcp add sem -- sem mcp
 ```
 
+Or one command that also installs the skill, so the agent knows *when* to reach for sem:
+
+```bash
+npx @ataraxy-labs/sem-skill
+```
+
 **Cursor, Claude Desktop, or any client with an `mcpServers` config:**
 
 ```json
